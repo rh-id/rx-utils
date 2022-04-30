@@ -1,8 +1,9 @@
 plugins {
     id 'java'
+    id 'maven-publish'
 }
 
-group 'co.rh.id.lib'
+group 'com.github.rh-id'
 version '1.0-SNAPSHOT'
 
 repositories {
@@ -17,4 +18,12 @@ dependencies {
 
 test {
     useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
 }
