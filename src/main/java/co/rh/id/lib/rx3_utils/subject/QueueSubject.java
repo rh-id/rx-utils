@@ -4,6 +4,7 @@ import io.reactivex.rxjava3.annotations.NonNull;
 import io.reactivex.rxjava3.annotations.Nullable;
 import io.reactivex.rxjava3.core.Observer;
 import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.plugins.RxJavaPlugins;
 import io.reactivex.rxjava3.subjects.Subject;
 
 import java.util.ArrayList;
@@ -19,13 +20,13 @@ import java.util.List;
 public class QueueSubject<T> extends Subject<T> {
 
     private final LinkedList<T> mQueue;
-    private final List<Observer<? super T>> mObservers;
+    private final List<QueueDisposable<T>> mSubscribers;
     private boolean mDone;
     private Throwable mThrowable;
 
     public QueueSubject() {
         mQueue = new LinkedList<>();
-        mObservers = new ArrayList<>();
+        mSubscribers = new ArrayList<>();
     }
 
     public synchronized List<T> getValues() {
@@ -33,22 +34,22 @@ public class QueueSubject<T> extends Subject<T> {
     }
 
     @Override
-    public boolean hasObservers() {
-        return !mObservers.isEmpty();
+    public synchronized boolean hasObservers() {
+        return !mSubscribers.isEmpty();
     }
 
     @Override
-    public boolean hasThrowable() {
+    public synchronized boolean hasThrowable() {
         return mThrowable != null;
     }
 
     @Override
-    public boolean hasComplete() {
+    public synchronized boolean hasComplete() {
         return mDone;
     }
 
     @Override
-    public @Nullable Throwable getThrowable() {
+    public synchronized @Nullable Throwable getThrowable() {
         return mThrowable;
     }
 
@@ -69,12 +70,13 @@ public class QueueSubject<T> extends Subject<T> {
     @Override
     public synchronized void onError(@NonNull Throwable e) {
         if (mDone) return;
-        if (!mObservers.isEmpty()) {
-            for (Observer<? super T> observer : mObservers) {
-                observer.onError(e);
+        if (!mSubscribers.isEmpty()) {
+            for (QueueDisposable<T> queueDisposable : mSubscribers) {
+                queueDisposable.onError(e);
             }
         }
         mThrowable = e;
+        mQueue.clear();
         mDone = true;
     }
 
@@ -83,23 +85,86 @@ public class QueueSubject<T> extends Subject<T> {
         if (mDone) return;
         flushQueue();
         mQueue.clear();
+        if (!mSubscribers.isEmpty()) {
+            for (QueueDisposable<T> queueDisposable : mSubscribers) {
+                queueDisposable.onComplete();
+            }
+        }
         mDone = true;
     }
 
     private synchronized void flushQueue() {
-        if (!mObservers.isEmpty()) {
+        if (!mSubscribers.isEmpty()) {
             while (!mQueue.isEmpty()) {
                 T value = mQueue.remove();
-                for (Observer<? super T> observer : mObservers) {
-                    observer.onNext(value);
+                for (QueueDisposable<T> queueDisposable : mSubscribers) {
+                    queueDisposable.onNext(value);
                 }
             }
         }
     }
 
+    private synchronized void remove(QueueDisposable<T> queueDisposable) {
+        mSubscribers.remove(queueDisposable);
+    }
+
+    private synchronized void add(QueueDisposable<T> queueDisposable) {
+        mSubscribers.add(queueDisposable);
+    }
+
     @Override
     protected synchronized void subscribeActual(@NonNull Observer<? super T> observer) {
-        mObservers.add(observer);
+        QueueDisposable<T> queueDisposable = new QueueDisposable<>(this, observer);
+        /* onSubscribe seemed to be mandatory call in this method?
+         it will break Observable.observeOn(differentThreadScheduler) if this is not called
+         */
+        observer.onSubscribe(queueDisposable);
+        add(queueDisposable);
         flushQueue();
+    }
+
+    static final class QueueDisposable<T> implements Disposable {
+        private final QueueSubject<T> mParent;
+        private final Observer<? super T> mDownstream;
+
+        private volatile boolean mDisposed;
+
+        QueueDisposable(QueueSubject<T> parent, Observer<? super T> actual) {
+            mParent = parent;
+            mDownstream = actual;
+        }
+
+        public void onNext(T t) {
+            if (!mDisposed) {
+                mDownstream.onNext(t);
+            }
+        }
+
+        public void onError(Throwable t) {
+            if (mDisposed) {
+                RxJavaPlugins.onError(t);
+            } else {
+                mDownstream.onError(t);
+            }
+        }
+
+        public void onComplete() {
+            if (!mDisposed) {
+                mDownstream.onComplete();
+            }
+        }
+
+        @Override
+        public void dispose() {
+            if (!mDisposed) {
+                mParent.remove(this);
+            }
+            mDisposed = true;
+        }
+
+        @Override
+        public boolean isDisposed() {
+            return mDisposed;
+        }
     }
 }
