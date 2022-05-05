@@ -120,6 +120,7 @@ public class QueueSubjectUnitTest {
         compositeDisposable.add(stringQueueSubject.observeOn(Schedulers.from(executorService))
                 .subscribe(resultString2::set));
 
+        Thread.sleep(10);
         assertEquals(test, resultString.get());
         assertNull(resultString2.get());
 
